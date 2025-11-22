@@ -1,7 +1,10 @@
 import uuid
-from typing import Union
+import datetime
+import sys
+sys.path.append('../server-scanning')
+from routes import ROUTES
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -30,8 +33,8 @@ def sign_data(payload: dict) -> str:
 class UserProvidedTicketData(BaseModel):
     from_station: str
     to_station: str
-    from_datetime: str
-    to_datetime: str
+    from_datetime: int
+    to_datetime: int
     ticket_type: str
     validating_methode: str
     user_provided_id: str
@@ -56,6 +59,16 @@ def read_root():
 
 @app.put("/buy-ticket")
 def generate_ticket(uptd: UserProvidedTicketData):
+
+    if uptd.from_station not in ROUTES:
+        raise HTTPException(status_code=404, detail="Start rail station not found!")
+    if uptd.to_station not in ROUTES[uptd.from_station]:
+        raise HTTPException(status_code=400, detail=f"End rail station is not a valid connection for {uptd.from_station}!")
+    if uptd.from_datetime < datetime.datetime.now().timestamp() or uptd.to_datetime < datetime.datetime.now().timestamp():
+        raise HTTPException(status_code=400, detail="Please book a connection that is not in the past.")
+    if uptd.from_datetime > uptd.to_datetime:
+        raise HTTPException(status_code=400, detail="The start time must be before the end time!")
+
     random_ticket_number = str(uuid.uuid4())
     payload = {
         "from_station": uptd.from_station,
@@ -70,6 +83,14 @@ def generate_ticket(uptd: UserProvidedTicketData):
     }
     print(payload)
     return {"payload": payload, "sign": sign_data(payload)}
+
+@app.get("/routes")
+def get_routes():
+    print(ROUTES)
+    response = {}
+    for route in ROUTES.keys():
+        response[route] = list(ROUTES[route].keys())
+    return {"routes": response}
 
 @app.get("/public-key")
 def get_data():
