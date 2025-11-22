@@ -2,6 +2,8 @@
 
 import base64
 import json
+from xmlrpc.client import MAXINT
+
 from fastapi.testclient import TestClient
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -13,7 +15,7 @@ client = TestClient(app)
 
 
 def load_public_key():
-    with open("tests/public.pem", "rb") as f:
+    with open("public.pem", "rb") as f:
         return serialization.load_pem_public_key(f.read())
 
 
@@ -23,16 +25,31 @@ def test_generate_ticket_signature_can_be_verified():
 
     # Beispiel-Input
     body = {
-        "from_station": "Zürich HB",
-        "to_station": "Bern",
-        "from_datetime": "2025-11-22T10:00:00",
-        "to_datetime": "2025-11-22T11:00:00",
+        "from_station": "Imaginary",
+        "to_station": "notImaginary",
+        "from_datetime": 0,
+        "to_datetime": 0,
         "ticket_type": "single",
         "validating_methode": "qr",
         "user_provided_id": "user-1234",
     }
 
     # Endpoint aufrufen
+    response = client.put("/buy-ticket", json=body)
+    assert response.status_code == 404
+
+    body["from_station"] = "Zurich HB"
+    response = client.put("/buy-ticket", json=body)
+    assert response.status_code == 400
+
+    body["to_station"] = "Bern"
+    response = client.put("/buy-ticket", json=body)
+    assert response.status_code == 400
+
+    body["from_datetime"] = MAXINT-100
+    response = client.put("/buy-ticket", json=body)
+    assert response.status_code == 400
+    body["to_datetime"] = MAXINT
     response = client.put("/buy-ticket", json=body)
     assert response.status_code == 200
 
