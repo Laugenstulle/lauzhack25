@@ -1,4 +1,3 @@
-import 'package:english_words/english_words.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:crypto/crypto.dart';
@@ -20,7 +19,7 @@ class MyApp extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (context) => MyAppState(),
       child: MaterialApp(
-        title: 'Namer App',
+        title: 'SBB Anonymous Ticket',
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
         ),
@@ -45,8 +44,10 @@ class MyAppState extends ChangeNotifier {
     tickets.add(ticket);
 
     notifyListeners();
-
   }
+
+
+
 }
 
 Ticket callTicketGenerationServer(String ticketId) {
@@ -58,6 +59,10 @@ Ticket callTicketGenerationServer(String ticketId) {
       destination: 'Renens VD',
       price: 42,
   );
+}
+
+TicketValidity callTicketValidationServer(StringticketId, location) {
+  return TicketValidity.Ok;
 }
 
 class Ticket {
@@ -113,7 +118,7 @@ class _MyHomePageState extends State<MyHomePage> {
         page = TicketViewer();
         break;
       case 2:
-        page = TicketDropdownScreen();
+        page = TicketChecker();
         break;
       default:
         throw UnimplementedError('no widget for $selectedIndex');
@@ -229,43 +234,22 @@ class TicketViewer extends StatelessWidget {
   }
 }
 
-class TicketChecker extends StatelessWidget {
+
+class TicketChecker extends StatefulWidget {
   @override
-  Widget build(BuildContext context) {
-    var appState = context.watch<MyAppState>();
-    var selectedTicket = 0;
-
-    if (appState.tickets.isEmpty) {
-      return Center(
-        child: Text('No tickets to check!'),
-      );
-    }
-
-    return ListView(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: Text('TicketViewer')
-        ),
-      ],
-    );
-  }
+  _TicketChecker createState() => _TicketChecker();
 }
 
-class TicketDropdownScreen extends StatefulWidget {
-  @override
-  _TicketDropdownScreenState createState() => _TicketDropdownScreenState();
-}
-
-class _TicketDropdownScreenState extends State<TicketDropdownScreen> {
-
-
+class _TicketChecker extends State<TicketChecker> {
   Ticket? selectedTicket;
+  TicketValidity ticketValidity = TicketValidity.Unkonwn;
+  String statusText = "";
 
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
     var tickets = appState.tickets;
+    var locationController = TextEditingController();
 
     if (appState.tickets.isEmpty) {
       return Center(
@@ -274,92 +258,66 @@ class _TicketDropdownScreenState extends State<TicketDropdownScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Select a Ticket'),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      body: Container(
+        color: Theme.of(context).colorScheme.primaryContainer,
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('Select a Ticket'),
-            DropdownButton<Ticket>(
-              hint: Text('Select a Ticket'),
-              value: selectedTicket,
-              onChanged: (Ticket? newValue) {
-                setState(() {
-                  selectedTicket = newValue;
-                });
-              },
-              items: tickets.map<DropdownMenuItem<Ticket>>((Ticket ticket) {
-                return DropdownMenuItem<Ticket>(
-                  value: ticket,
-                  child: Text(ticket.start),
-                );
-              }).toList(),
-            ),
-            SizedBox(height: 20),
-            if (selectedTicket != null)
-              Column(
+            SizedBox(height: 50,),
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
-                  BigCard(ticket: selectedTicket!,)
-                ],
+                  Text('Select a Ticket to validate'),
+                  DropdownButton<Ticket>(
+                    hint: Text('Select a Ticket'),
+                    value: selectedTicket,
+                    onChanged: (Ticket? newValue) {
+                      setState(() {
+                        selectedTicket = newValue;
+                      });
+                    },
+                    items: tickets.map<DropdownMenuItem<Ticket>>((Ticket ticket) {
+                      return DropdownMenuItem<Ticket>(
+                        value: ticket,
+                        child: Text('${ticket.start} -> ${ticket.destination}'),
+                      );
+                    }).toList(),
+                  ),
+                  SizedBox(height: 20),
+                  if (selectedTicket != null) BigCard(ticket: selectedTicket!,),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: TextField(
+                            controller: locationController,
+                            decoration: InputDecoration(
+                              labelText: 'location',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
+                          print("checked ticket at ${locationController.text}, ticket validity: $ticketValidity");
+                          locationController.clear();
+                          },
+                        child: Text('check ticket'),
+                      ),
+                    ],
+                  ),
+                  Text("$ticketValidity"),
+
+              ],
               ),
+            ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-
-// Define a custom Form widget.
-class MyCustomForm extends StatefulWidget {
-  const MyCustomForm({super.key});
-
-  @override
-  State<MyCustomForm> createState() => _MyCustomFormState();
-}
-
-// Define a corresponding State class.
-// This class holds the data related to the Form.
-class _MyCustomFormState extends State<MyCustomForm> {
-  // Create a text controller and use it to retrieve the current value
-  // of the TextField.
-  final myController = TextEditingController();
-
-  @override
-  void dispose() {
-    // Clean up the controller when the widget is disposed.
-    myController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Retrieve Text Input')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: TextField(controller: myController),
-      ),
-      floatingActionButton: FloatingActionButton(
-        // When the user presses the button, show an alert dialog containing
-        // the text that the user has entered into the text field.
-        onPressed: () {
-          showDialog(
-            context: context,
-            builder: (context) {
-              return AlertDialog(
-                // Retrieve the text the that user has entered by using the
-                // TextEditingController.
-                content: Text(myController.text),
-              );
-            },
-          );
-        },
-        tooltip: 'Show me the value!',
-        child: const Icon(Icons.text_fields),
       ),
     );
   }
@@ -406,4 +364,11 @@ class BigCard extends StatelessWidget {
       ),
     );
   }
+}
+
+enum TicketValidity {
+  Ok,
+  CheckIdentity,
+  Invalid,
+  Unkonwn,
 }
