@@ -7,6 +7,9 @@
 .buildlog/
 .history
 
+# Repo specific
+/ticket-generator/.idea
+/ticket-generator/.venv
 
 
 # Flutter repo-specific
