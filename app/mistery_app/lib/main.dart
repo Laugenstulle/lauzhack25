@@ -59,7 +59,7 @@ class MyAppState extends ChangeNotifier {
       ) async {
     var nonce = Random.secure().toString();
     var bytes = utf8.encode(securityFactor + nonce);
-    var ticketId = sha256.convert(bytes).toString();
+    var ticketId = sha256.convert(bytes).toString().substring(0, 32);
     Ticket ticket = await callTicketGenerationServer(
       start,
       destination,
@@ -107,8 +107,8 @@ Future<http.Response> validateTicket(
     String ticketId,
     String location
     ) async {
-  return await http.post(
-    Uri.parse('http://127.0.0.1:8001/tickets/$ticketId'),
+  return await http.put(
+    Uri.parse('http://127.0.0.1:8000/register/$ticketId'),
     headers: <String, String>{
       'Content-Type': 'application/json; charset=UTF-8',
     },
@@ -126,6 +126,7 @@ class ValidationResponse {
   });
 
   factory ValidationResponse.fromJson(Map<String, dynamic> json) {
+    print(json);
     return ValidationResponse(
         isSuspicious: json["suspicious"] == "true"
     );
@@ -140,23 +141,23 @@ class ValidationResponse {
   }
 }
 
-TicketValidity callTicketValidationServer(String ticketId, String location) {
-  var json = validateTicket(ticketId, location);
+Future<TicketValidity> callTicketValidationServer(String ticketId, String location) async {
+  var json = await validateTicket(ticketId, location);
 
-  return ValidationResponse.fromJson(json as Map<String, dynamic>).toTicketValidity();
+  return ValidationResponse.fromJson(jsonDecode(json.body) as Map<String, dynamic>).toTicketValidity();
 
 }
 
 class Ticket {
   // Data fields
-  late final String ticketId;
+  String ticketId;
   final DateTime validFrom;
   final DateTime validUntil;
   final String start;
   final String destination;
   final int price;
   final SecurityFactorMethod securityFactorMethod;
-  late final String nonce;
+  String nonce;
 
 
   // Constructor
@@ -174,8 +175,8 @@ class Ticket {
   factory Ticket.fromJson(Map<String, dynamic> json, String ticketId) {
     return Ticket(
           ticketId: ticketId,
-          validFrom:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["from_datetime"] ?? "0")),
-          validUntil:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["to_datetime"] ?? "0")),
+          validFrom:  DateTime.fromMillisecondsSinceEpoch((json["payload"]["from_datetime"])),
+          validUntil:  DateTime.fromMillisecondsSinceEpoch((json["payload"]["to_datetime"])),
           start:  json["payload"]["from_station"] ?? "0",
           destination:  json["payload"]["to_station"] ?? "0",
           price:  json["payload"]["price"] ?? "0",
@@ -545,10 +546,10 @@ class _TicketChecker extends State<TicketChecker> {
                         ),
                       ),
                       ElevatedButton(
-                        onPressed: () {
+                        onPressed: () async {
+                          var val = await callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
                           setState(() {
-                            //_ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
-                            _ticketValidity = TicketValidity.CheckIdentity;
+                            _ticketValidity = val;
                             locationController.clear();
                           });
                           },
@@ -657,7 +658,7 @@ enum TicketValidity {
 
 bool checkIdentity(String securityFactor, Ticket shownTicket) {
   var bytes = utf8.encode(securityFactor + shownTicket.nonce);
-  var ticketId = sha256.convert(bytes).toString();
+  var ticketId = sha256.convert(bytes).toString().substring(0, 32);
 
   return ticketId == shownTicket.ticketId;
 }
