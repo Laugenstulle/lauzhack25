@@ -151,7 +151,7 @@ async def register_ticket(ticket_id: UUID, payload: TicketRegister = Body(...)):
 
     found_hash, last_location, last_scan_time = find_ticket_in_db(ticket_bytes)
 
-    suspicious = False
+    suspicious = True
     message = "Ticket registered successfully"
 
     if found_hash:
@@ -174,6 +174,7 @@ async def register_ticket(ticket_id: UUID, payload: TicketRegister = Body(...)):
             'INSERT INTO tickets (id, location, last_scan_time) VALUES (?, ?, ?)',
             (hashed_ticket, payload.location, current_time)
         )
+        suspicious = False
 
     db_connection.commit()
 
