@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:http/http.dart' as http;
 
 
 void main() {
@@ -34,45 +35,126 @@ class MyApp extends StatelessWidget {
 
 class MyAppState extends ChangeNotifier {
 
-  var tickets = <Ticket>{};
+  var tickets = <Ticket>{ Ticket(
+      ticketId: 'ab1f9a7df661cc7fbcc354924e3a710e717d91805f443cd2eeec0029c36ace8d',
+      validFrom: DateTime.now(),
+      validUntil: DateTime.now(),
+      start: 'KIT',
+      destination: 'EPFL',
+      price: 20,
+      securityFactorMethod: SecurityFactorMethod.TokenCard,
+      nonce: '0',
+  )};
 
-  void generateTicket(String token) {
+  Future<void> generateTicket(
+      String securityFactor,
+      String start,
+      String destination,
+      DateTime validFrom,
+      DateTime validUntil,
+      String ticketType,
+      String validatingMethod,
+      ) async {
     var nonce = Random.secure().toString();
-    var bytes = utf8.encode(token + nonce);
+    var bytes = utf8.encode(securityFactor + nonce);
     var ticketId = sha256.convert(bytes).toString();
-    Ticket ticket = callTicketGenerationServer(ticketId);
+    Ticket ticket = await callTicketGenerationServer(
+      start,
+      destination,
+      validFrom,
+      validUntil,
+      ticketType,
+      validatingMethod,
+      ticketId,
+      nonce,
+    );
     tickets.add(ticket);
-
     notifyListeners();
   }
 
 
-
 }
 
-Ticket callTicketGenerationServer(String ticketId) {
-  return new Ticket(
-      ticketId: ticketId,
-      validFrom: DateTime.fromMillisecondsSinceEpoch(0),
-      validUntil: DateTime.now(),
-      start: 'Karlsruhe Hbf',
-      destination: 'Renens VD',
-      price: 42,
+Future<Ticket> callTicketGenerationServer(
+    String start,
+    String destination,
+    DateTime validFrom,
+    DateTime validUntil,
+    String ticketType,
+    String validatingMethod,
+    String ticketId,
+    String nonce) async {
+  
+  var json = await createTicket(
+    start,
+    destination,
+    validFrom.millisecondsSinceEpoch,
+    validUntil.millisecondsSinceEpoch,
+    ticketType,
+    validatingMethod,
+    ticketId,
+  );
+
+  var ticket = Ticket.fromJson(jsonDecode(json.body) as Map<String, dynamic>, ticketId);
+  ticket.nonce = nonce;
+  ticket.ticketId = ticketId;
+  return ticket;
+}
+
+Future<http.Response> validateTicket(
+    String ticketId,
+    String location
+    ) async {
+  return await http.post(
+    Uri.parse('http://127.0.0.1:8001/tickets/$ticketId'),
+    headers: <String, String>{
+      'Content-Type': 'application/json; charset=UTF-8',
+    },
+    body: jsonEncode(<String, String>{
+      "location": location
+    }),
   );
 }
 
-TicketValidity callTicketValidationServer(StringticketId, location) {
-  return TicketValidity.Ok;
+class ValidationResponse {
+  final bool isSuspicious;
+
+  ValidationResponse({
+    required this.isSuspicious,
+  });
+
+  factory ValidationResponse.fromJson(Map<String, dynamic> json) {
+    return ValidationResponse(
+        isSuspicious: json["suspicious"] == "true"
+    );
+  }
+
+  TicketValidity toTicketValidity() {
+    if (isSuspicious) {
+      return TicketValidity.CheckIdentity;
+    } else {
+    return TicketValidity.Ok;
+    }
+  }
+}
+
+TicketValidity callTicketValidationServer(String ticketId, String location) {
+  var json = validateTicket(ticketId, location);
+
+  return ValidationResponse.fromJson(json as Map<String, dynamic>).toTicketValidity();
+
 }
 
 class Ticket {
   // Data fields
-  final String ticketId;
+  late final String ticketId;
   final DateTime validFrom;
   final DateTime validUntil;
   final String start;
   final String destination;
-  final double price;
+  final int price;
+  final SecurityFactorMethod securityFactorMethod;
+  late final String nonce;
 
 
   // Constructor
@@ -83,18 +165,59 @@ class Ticket {
     required this.start,
     required this.destination,
     required this.price,
+    required this.securityFactorMethod,
+    required this.nonce,
   });
+
+  factory Ticket.fromJson(Map<String, dynamic> json, String ticketId) {
+    return Ticket(
+          ticketId: ticketId,
+          validFrom:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["from_datetime"] ?? "0")),
+          validUntil:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["to_datetime"] ?? "0")),
+          start:  json["payload"]["from_station"] ?? "0",
+          destination:  json["payload"]["to_station"] ?? "0",
+          price:  json["payload"]["price"] ?? "0",
+          securityFactorMethod: SecurityFactorMethod.IDNumber,
+          nonce: "0"
+    );
+  }
 
   @override
   String toString() {
-    final DateFormat formatter = DateFormat('dd.MM.yy');
+    final DateFormat formatter = DateFormat('dd.MM.yyyy');
     return "${formatter.format(validFrom)} - ${formatter.format(validUntil)}" +
-        "\n$start\n    to\n $destination";
+        "\n$start to $destination";
   }
 
   String toData() {
     return "$ticketId$validFrom$validUntil$start$destination";
   }
+}
+
+Future<http.Response> createTicket(
+    String start,
+    String destination,
+    int validFromMilliseconds,
+    int validUntilMilliseconds,
+    String ticketType,
+    String validatingMethod,
+    String ticketId,
+    ) {
+  return http.put(
+    Uri.parse('http://127.0.0.1:8000/buy-ticket'),
+    headers: <String, String>{
+      'Content-Type': 'application/json; charset=UTF-8',
+    },
+    body: jsonEncode(<String, String>{
+      "from_station": start,
+      "to_station": destination,
+      "from_datetime": "$validFromMilliseconds",
+      "to_datetime": "$validUntilMilliseconds",
+      "ticket_type": ticketType,
+      "validating_methode": validatingMethod,
+      "user_provided_id": ticketId
+    }),
+  );
 }
 
 class MyHomePage extends StatefulWidget {
@@ -169,23 +292,108 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 }
 
-class TicketGenerator extends StatelessWidget {
+class TicketGenerator extends StatefulWidget {
+  @override
+  State<TicketGenerator> createState() => _TicketGeneratorState();
+}
+
+class _TicketGeneratorState extends State<TicketGenerator> {
+  SecurityFactorMethod _selectedSecurityMethod = SecurityFactorMethod.TokenCard;
+  String _selectedStart = "KIT";
+  String _selectedDestination = "EPFL";
+  List<String> stations = ['KIT', 'EPFL', 'Bern', 'Zürich', 'Olten', 'Interlaken West'];
+
+
+
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
-    final myController = TextEditingController();
+    var now = DateTime.now();
+    var inThreeMonth = DateTime(now.year, now.month, now.day + 1);
+    final securityFactorController = TextEditingController();
 
-    return Center(
+     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          TextField(
-            controller: myController,
-            decoration: const InputDecoration(
-              border: UnderlineInputBorder(),
-              labelText: 'Enter your anonymous SSB token',
-
+          Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  DropdownButton<String>(
+                    hint: Text('Select a start station'),
+                    value: _selectedStart,
+                    onChanged: (String? newValue) {
+                      setState (() {
+                        _selectedStart = newValue ?? "KIT";
+                      });
+                    },
+                    items: stations.map<DropdownMenuItem<String>>((String type) {
+                      return DropdownMenuItem<String>(
+                        value: type,
+                        child: Text(type), // Convert enum to string
+                      );
+                    }).toList(),
+                  ),
+                  SizedBox(width: 5,),
+                  Icon(Icons.keyboard_double_arrow_right_sharp),
+                  SizedBox(width: 5,),
+                  DropdownButton<String>(
+                    hint: Text('Select a destination'),
+                    value: _selectedDestination,
+                    onChanged: (String? newValue) {
+                      setState (() {
+                        _selectedDestination = newValue ?? "EPFL";
+                      });
+                    },
+                    items: stations.map<DropdownMenuItem<String>>((String type) {
+                      return DropdownMenuItem<String>(
+                        value: type,
+                        child: Text(type), // Convert enum to string
+                      );
+                    }).toList(),
+                  ),
+            ],
             ),
+          ),
+          SizedBox(height: 20.0,),
+
+          Row(
+            children: [
+              SizedBox(width: 10,),
+              DropdownButton<SecurityFactorMethod>(
+                hint: Text('Select a Ticket Type'),
+                value: _selectedSecurityMethod,
+                onChanged: (SecurityFactorMethod? newValue) {
+                  setState (() {
+                    if (newValue != null) {
+                      _selectedSecurityMethod = newValue;
+                    }
+
+                  });
+                },
+                items: SecurityFactorMethod.values.map<DropdownMenuItem<SecurityFactorMethod>>((SecurityFactorMethod type) {
+                  return DropdownMenuItem<SecurityFactorMethod>(
+                    value: type,
+                    child: Text(type.toString().split('.').last.toUpperCase()), // Convert enum to string
+                  );
+                }).toList(),
+              ),
+              SizedBox(width: 10,),
+              if (_selectedSecurityMethod != null)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: TextField(
+                      controller: securityFactorController,
+                      decoration: InputDecoration(
+                        labelText: 'Enter your ${securityMethodToString(_selectedSecurityMethod!)}',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
           SizedBox(height: 10),
           ElevatedButton(
@@ -193,7 +401,15 @@ class TicketGenerator extends StatelessWidget {
               showDialog(
                 context: context,
                 builder: (context) {
-                  appState.generateTicket(myController.text);
+                  appState.generateTicket(
+                      securityFactorController.text,
+                      _selectedStart,
+                      _selectedDestination,
+                      now,
+                      inThreeMonth,
+                      'dayticket',
+                      _selectedSecurityMethod.toString(),
+                  );
                   return AlertDialog(
                     content: Text('ticket generated!'),
                   );
@@ -235,6 +451,8 @@ class TicketViewer extends StatelessWidget {
 }
 
 
+
+
 class TicketChecker extends StatefulWidget {
   @override
   _TicketChecker createState() => _TicketChecker();
@@ -242,8 +460,10 @@ class TicketChecker extends StatefulWidget {
 
 class _TicketChecker extends State<TicketChecker> {
   Ticket? selectedTicket;
-  TicketValidity ticketValidity = TicketValidity.Unkonwn;
+  TicketValidity _ticketValidity = TicketValidity.Unkonwn;
   String statusText = "";
+  var controller = TextEditingController();
+
 
   @override
   Widget build(BuildContext context) {
@@ -286,6 +506,7 @@ class _TicketChecker extends State<TicketChecker> {
                   ),
                   SizedBox(height: 20),
                   if (selectedTicket != null) BigCard(ticket: selectedTicket!,),
+                  SizedBox(height: 20),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -303,15 +524,50 @@ class _TicketChecker extends State<TicketChecker> {
                       ),
                       ElevatedButton(
                         onPressed: () {
-                          ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
-                          print("checked ticket at ${locationController.text}, ticket validity: $ticketValidity");
-                          locationController.clear();
+                          setState(() {
+                            //_ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
+                            _ticketValidity = TicketValidity.CheckIdentity;
+                            print("checked ticket at ${locationController.text}, ticket validity: $_ticketValidity");
+                            locationController.clear();
+                          });
                           },
                         child: Text('check ticket'),
                       ),
                     ],
                   ),
-                  Text("$ticketValidity"),
+                  SizedBox(height: 20,),
+                  if (selectedTicket != null)
+                    validityToCard(_ticketValidity, context, selectedTicket!),
+                  if (_ticketValidity ==  TicketValidity.CheckIdentity && (selectedTicket != null) && selectedTicket!.securityFactorMethod != null)
+                    Row(
+                      children: [
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: TextField(
+                                controller: controller,
+                                decoration: InputDecoration(
+                                    labelText: 'Enter clients ${securityMethodToString(selectedTicket!.securityFactorMethod)}',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+
+                                if (checkIdentity(controller.text, selectedTicket!)) {
+                                  _ticketValidity = TicketValidity.Ok;
+                                  return;
+                                }
+                                _ticketValidity = TicketValidity.Invalid;
+                              });
+                            },
+                            child: Text('Check Identity'))
+                      ],
+                    ),
+
 
               ],
               ),
@@ -345,14 +601,19 @@ class BigCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Expanded(
-              child: QrImageView(
-                data: ticket.toData(),
-                padding: EdgeInsets.all(5.0),
-                version: QrVersions.auto,
-                backgroundColor: Colors.white,
-              ),
+            Flexible(
+                child: SizedBox(
+                  height: 200,
+                  width: 200,
+                  child: QrImageView(
+                    data: ticket.toData(),
+                    padding: EdgeInsets.all(5.0),
+                    version: QrVersions.auto,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
             ),
             SizedBox(width: 10,),
             Text(
@@ -371,4 +632,92 @@ enum TicketValidity {
   CheckIdentity,
   Invalid,
   Unkonwn,
+}
+
+bool checkIdentity(String securityFactor, Ticket shownTicket) {
+  var bytes = utf8.encode(securityFactor + shownTicket.nonce);
+  print(securityFactor + "  " + shownTicket.nonce);
+  var ticketId = sha256.convert(bytes).toString();
+  print(ticketId + "  ==  " + shownTicket.ticketId);
+
+  return ticketId == shownTicket.ticketId;
+}
+
+SizedBox validityToCard(TicketValidity validity, BuildContext context, Ticket controlledTicket) {
+  switch (validity) {
+
+    case TicketValidity.Ok:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.green,
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.check),
+                SizedBox(width: 5.0,),
+                Text('Validation successful'),
+              ],
+            ),
+          ),
+        ),
+      );
+    case TicketValidity.CheckIdentity:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.orange,
+          child: Center(
+            child:
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.perm_identity),
+                    SizedBox(width: 5.0,),
+                    Text('Check Identity of client!'),
+                  ],
+                ),
+
+          ),
+        ),
+      );
+    case TicketValidity.Invalid:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.red,
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.warning),
+                SizedBox(width: 5.0,),
+                Text('Ticket invalid!'),
+              ],
+            ),
+          ),
+        ),
+      );
+    case TicketValidity.Unkonwn:
+      return SizedBox(
+      );
+  }
+}
+
+String securityMethodToString(SecurityFactorMethod secMethod) {
+  switch (secMethod) {
+
+    case SecurityFactorMethod.TokenCard:
+      return "SBB anonymouse Token card";
+    case SecurityFactorMethod.IDNumber:
+      return "ID number";
+  }
+}
+
+
+
+enum SecurityFactorMethod {
+  TokenCard,
+  IDNumber,
 }
