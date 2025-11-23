@@ -10,6 +10,8 @@
 # Repo specific
 /ticket-generator/.idea
 /ticket-generator/.venv
+/server-scanning/.idea
+/server-scanning/.venv
 
 
 # Flutter repo-specific
