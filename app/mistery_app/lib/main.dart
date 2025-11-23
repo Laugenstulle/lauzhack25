@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:flutter/material.dart';
 
 
 void main() {
@@ -182,6 +184,18 @@ class Ticket {
     );
   }
 
+   Ticket fromQrCodeData(String data) {
+     return Ticket(
+         ticketId: data.substring(0, 32),
+         validFrom: DateTime.parse(data.substring(32, 58)),
+         validUntil: DateTime.parse(data.substring(58, 84)),
+         start: data.substring(84, 87),
+         destination: data.substring(87, 91),
+         price: 0,
+         securityFactorMethod: SecurityFactorMethod.IDNumber,
+         nonce: '');
+  }
+
   @override
   String toString() {
     final DateFormat formatter = DateFormat('dd.MM.yyyy');
@@ -243,6 +257,9 @@ class _MyHomePageState extends State<MyHomePage> {
       case 2:
         page = TicketChecker();
         break;
+      case 3:
+        page = QrReader();
+        break;
       default:
         throw UnimplementedError('no widget for $selectedIndex');
     }
@@ -268,6 +285,10 @@ class _MyHomePageState extends State<MyHomePage> {
                       NavigationRailDestination(
                         icon: Icon(Icons.check_circle_outline),
                         label: Text('Validate ticket'),
+                      ),
+                      NavigationRailDestination(
+                        icon: Icon(Icons.qr_code_scanner),
+                        label: Text('Scan ticket'),
                       ),
                     ],
                     selectedIndex: selectedIndex,
@@ -527,7 +548,6 @@ class _TicketChecker extends State<TicketChecker> {
                           setState(() {
                             //_ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
                             _ticketValidity = TicketValidity.CheckIdentity;
-                            print("checked ticket at ${locationController.text}, ticket validity: $_ticketValidity");
                             locationController.clear();
                           });
                           },
@@ -636,9 +656,7 @@ enum TicketValidity {
 
 bool checkIdentity(String securityFactor, Ticket shownTicket) {
   var bytes = utf8.encode(securityFactor + shownTicket.nonce);
-  print(securityFactor + "  " + shownTicket.nonce);
   var ticketId = sha256.convert(bytes).toString();
-  print(ticketId + "  ==  " + shownTicket.ticketId);
 
   return ticketId == shownTicket.ticketId;
 }
@@ -720,4 +738,70 @@ String securityMethodToString(SecurityFactorMethod secMethod) {
 enum SecurityFactorMethod {
   TokenCard,
   IDNumber,
+}
+
+class QrReader extends StatefulWidget {
+  const QrReader({super.key});
+
+  @override
+  State<QrReader> createState() => _QrReader();
+}
+
+class _QrReader extends State<QrReader> {
+  String? _result;
+
+  void setResult(String result) {
+    setState(() => _result = result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_result ?? 'No result'),
+            ElevatedButton(
+              child: const Text('Scan QR code'),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => QrCodeScanner(setResult: setResult),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+class QrCodeScanner extends StatelessWidget {
+  QrCodeScanner({required this.setResult,super.key});
+
+  final MobileScannerController controller = MobileScannerController();
+  final Function setResult;
+
+  @override
+  Widget build(BuildContext context) {
+    return MobileScanner(
+      controller: controller,
+      onDetect: (BarcodeCapture capture) async {
+        final List<Barcode> barcodes = capture.barcodes;
+
+        final barcode = barcodes.first;
+
+        if (barcode.rawValue != null) {
+          setResult(barcode.rawValue);
+
+          await controller
+              .stop()
+              .then((value) => controller.dispose())
+              .then((value) => Navigator.of(context).pop());
+        }
+      },
+    );
+  }
 }

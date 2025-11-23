@@ -44,6 +44,7 @@ dev_dependencies:
   intl: any
   qr_flutter: ^4.1.0
   http: any
+  mobile_scanner: ^5.1.1
 
 
 
