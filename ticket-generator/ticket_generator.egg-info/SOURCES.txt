@@ -1,7 +1,0 @@
-main.py
-pyproject.toml
-ticket_generator.egg-info/PKG-INFO
-ticket_generator.egg-info/SOURCES.txt
-ticket_generator.egg-info/dependency_links.txt
-ticket_generator.egg-info/requires.txt
-ticket_generator.egg-info/top_level.txt

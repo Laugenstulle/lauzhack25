@@ -1,2 +1,0 @@
-cryptography>=46.0.3
-fastapi[standard]>=0.121.3
