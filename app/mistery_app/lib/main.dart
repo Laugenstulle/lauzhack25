@@ -1,5 +1,3 @@
-import 'dart:ffi';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:crypto/crypto.dart';
@@ -37,7 +35,16 @@ class MyApp extends StatelessWidget {
 
 class MyAppState extends ChangeNotifier {
 
-  var tickets = <Ticket>{};
+  var tickets = <Ticket>{ Ticket(
+      ticketId: 'ab1f9a7df661cc7fbcc354924e3a710e717d91805f443cd2eeec0029c36ace8d',
+      validFrom: DateTime.now(),
+      validUntil: DateTime.now(),
+      start: 'KIT',
+      destination: 'EPFL',
+      price: 20,
+      securityFactorMethod: SecurityFactorMethod.TokenCard,
+      nonce: '0',
+  )};
 
   Future<void> generateTicket(
       String securityFactor,
@@ -59,12 +66,11 @@ class MyAppState extends ChangeNotifier {
       ticketType,
       validatingMethod,
       ticketId,
+      nonce,
     );
     tickets.add(ticket);
-
     notifyListeners();
   }
-
 
 
 }
@@ -76,7 +82,8 @@ Future<Ticket> callTicketGenerationServer(
     DateTime validUntil,
     String ticketType,
     String validatingMethod,
-    String ticketId,) async {
+    String ticketId,
+    String nonce) async {
   
   var json = await createTicket(
     start,
@@ -89,6 +96,8 @@ Future<Ticket> callTicketGenerationServer(
   );
 
   var ticket = Ticket.fromJson(jsonDecode(json.body) as Map<String, dynamic>, ticketId);
+  ticket.nonce = nonce;
+  ticket.ticketId = ticketId;
   return ticket;
 }
 
@@ -138,12 +147,14 @@ TicketValidity callTicketValidationServer(String ticketId, String location) {
 
 class Ticket {
   // Data fields
-  final String ticketId;
+  late final String ticketId;
   final DateTime validFrom;
   final DateTime validUntil;
   final String start;
   final String destination;
   final int price;
+  final SecurityFactorMethod securityFactorMethod;
+  late final String nonce;
 
 
   // Constructor
@@ -154,25 +165,28 @@ class Ticket {
     required this.start,
     required this.destination,
     required this.price,
+    required this.securityFactorMethod,
+    required this.nonce,
   });
 
   factory Ticket.fromJson(Map<String, dynamic> json, String ticketId) {
-    print(json.toString());
     return Ticket(
           ticketId: ticketId,
           validFrom:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["from_datetime"] ?? "0")),
           validUntil:  DateTime.fromMillisecondsSinceEpoch(int.parse(json["payload"]["to_datetime"] ?? "0")),
           start:  json["payload"]["from_station"] ?? "0",
           destination:  json["payload"]["to_station"] ?? "0",
-          price:  json["payload"]["price"] ?? "0"
+          price:  json["payload"]["price"] ?? "0",
+          securityFactorMethod: SecurityFactorMethod.IDNumber,
+          nonce: "0"
     );
   }
 
   @override
   String toString() {
-    final DateFormat formatter = DateFormat('dd.MM.yy');
+    final DateFormat formatter = DateFormat('dd.MM.yyyy');
     return "${formatter.format(validFrom)} - ${formatter.format(validUntil)}" +
-        "\n$start\n    to\n $destination";
+        "\n$start to $destination";
   }
 
   String toData() {
@@ -284,7 +298,7 @@ class TicketGenerator extends StatefulWidget {
 }
 
 class _TicketGeneratorState extends State<TicketGenerator> {
-  SecurityFactorMethod? _selectedSecurityMethod = SecurityFactorMethod.TokenCard;
+  SecurityFactorMethod _selectedSecurityMethod = SecurityFactorMethod.TokenCard;
   String _selectedStart = "KIT";
   String _selectedDestination = "EPFL";
   List<String> stations = ['KIT', 'EPFL', 'Bern', 'Zürich', 'Olten', 'Interlaken West'];
@@ -352,8 +366,10 @@ class _TicketGeneratorState extends State<TicketGenerator> {
                 value: _selectedSecurityMethod,
                 onChanged: (SecurityFactorMethod? newValue) {
                   setState (() {
-                    _selectedSecurityMethod = newValue;
-                    print(_selectedSecurityMethod);
+                    if (newValue != null) {
+                      _selectedSecurityMethod = newValue;
+                    }
+
                   });
                 },
                 items: SecurityFactorMethod.values.map<DropdownMenuItem<SecurityFactorMethod>>((SecurityFactorMethod type) {
@@ -444,8 +460,10 @@ class TicketChecker extends StatefulWidget {
 
 class _TicketChecker extends State<TicketChecker> {
   Ticket? selectedTicket;
-  TicketValidity ticketValidity = TicketValidity.Unkonwn;
+  TicketValidity _ticketValidity = TicketValidity.Unkonwn;
   String statusText = "";
+  var controller = TextEditingController();
+
 
   @override
   Widget build(BuildContext context) {
@@ -488,6 +506,7 @@ class _TicketChecker extends State<TicketChecker> {
                   ),
                   SizedBox(height: 20),
                   if (selectedTicket != null) BigCard(ticket: selectedTicket!,),
+                  SizedBox(height: 20),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -505,15 +524,50 @@ class _TicketChecker extends State<TicketChecker> {
                       ),
                       ElevatedButton(
                         onPressed: () {
-                          ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
-                          print("checked ticket at ${locationController.text}, ticket validity: $ticketValidity");
-                          locationController.clear();
+                          setState(() {
+                            //_ticketValidity = callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
+                            _ticketValidity = TicketValidity.CheckIdentity;
+                            print("checked ticket at ${locationController.text}, ticket validity: $_ticketValidity");
+                            locationController.clear();
+                          });
                           },
                         child: Text('check ticket'),
                       ),
                     ],
                   ),
-                  Text("$ticketValidity"),
+                  SizedBox(height: 20,),
+                  if (selectedTicket != null)
+                    validityToCard(_ticketValidity, context, selectedTicket!),
+                  if (_ticketValidity ==  TicketValidity.CheckIdentity && (selectedTicket != null) && selectedTicket!.securityFactorMethod != null)
+                    Row(
+                      children: [
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: TextField(
+                                controller: controller,
+                                decoration: InputDecoration(
+                                    labelText: 'Enter clients ${securityMethodToString(selectedTicket!.securityFactorMethod)}',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+
+                                if (checkIdentity(controller.text, selectedTicket!)) {
+                                  _ticketValidity = TicketValidity.Ok;
+                                  return;
+                                }
+                                _ticketValidity = TicketValidity.Invalid;
+                              });
+                            },
+                            child: Text('Check Identity'))
+                      ],
+                    ),
+
 
               ],
               ),
@@ -547,14 +601,19 @@ class BigCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Expanded(
-              child: QrImageView(
-                data: ticket.toData(),
-                padding: EdgeInsets.all(5.0),
-                version: QrVersions.auto,
-                backgroundColor: Colors.white,
-              ),
+            Flexible(
+                child: SizedBox(
+                  height: 200,
+                  width: 200,
+                  child: QrImageView(
+                    data: ticket.toData(),
+                    padding: EdgeInsets.all(5.0),
+                    version: QrVersions.auto,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
             ),
             SizedBox(width: 10,),
             Text(
@@ -575,6 +634,77 @@ enum TicketValidity {
   Unkonwn,
 }
 
+bool checkIdentity(String securityFactor, Ticket shownTicket) {
+  var bytes = utf8.encode(securityFactor + shownTicket.nonce);
+  print(securityFactor + "  " + shownTicket.nonce);
+  var ticketId = sha256.convert(bytes).toString();
+  print(ticketId + "  ==  " + shownTicket.ticketId);
+
+  return ticketId == shownTicket.ticketId;
+}
+
+SizedBox validityToCard(TicketValidity validity, BuildContext context, Ticket controlledTicket) {
+  switch (validity) {
+
+    case TicketValidity.Ok:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.green,
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.check),
+                SizedBox(width: 5.0,),
+                Text('Validation successful'),
+              ],
+            ),
+          ),
+        ),
+      );
+    case TicketValidity.CheckIdentity:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.orange,
+          child: Center(
+            child:
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.perm_identity),
+                    SizedBox(width: 5.0,),
+                    Text('Check Identity of client!'),
+                  ],
+                ),
+
+          ),
+        ),
+      );
+    case TicketValidity.Invalid:
+      return SizedBox(
+        height: 80,
+        child: Card(
+          color: Colors.red,
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.warning),
+                SizedBox(width: 5.0,),
+                Text('Ticket invalid!'),
+              ],
+            ),
+          ),
+        ),
+      );
+    case TicketValidity.Unkonwn:
+      return SizedBox(
+      );
+  }
+}
+
 String securityMethodToString(SecurityFactorMethod secMethod) {
   switch (secMethod) {
 
@@ -584,6 +714,8 @@ String securityMethodToString(SecurityFactorMethod secMethod) {
       return "ID number";
   }
 }
+
+
 
 enum SecurityFactorMethod {
   TokenCard,
