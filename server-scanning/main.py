@@ -20,6 +20,7 @@ from routes import get_min_travel_time, ROUTES
 DB_PATH = os.getenv('DB_PATH', 'tickets.db')
 PRIVATE_KEY_PATH = "private.pem"
 PUBLIC_KEY_PATH = "public.pem"
+# Just for demo purposes
 TICKET_PRICE = 20
 
 # App initialization
@@ -180,7 +181,7 @@ async def register_ticket(ticket_id: UUID, payload: TicketRegister = Body(...)):
         "message": message,
         "ticket": str(ticket_id),
         "location": payload.location,
-        "suspicious": suspicious
+        "suspicious": suspicious,
     }
 
 
