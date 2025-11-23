@@ -46,6 +46,7 @@ class MyAppState extends ChangeNotifier {
       price: 20,
       securityFactorMethod: SecurityFactorMethod.TokenCard,
       nonce: '0',
+      signature: 'I_signed_this!'
   )};
 
   Future<void> generateTicket(
@@ -118,38 +119,25 @@ Future<http.Response> validateTicket(
   );
 }
 
-class ValidationResponse {
-  final bool isSuspicious;
 
-  ValidationResponse({
-    required this.isSuspicious,
-  });
-
-  factory ValidationResponse.fromJson(Map<String, dynamic> json) {
-    print(json);
-    return ValidationResponse(
-        isSuspicious: json["suspicious"] == "true"
-    );
+TicketValidity fromJsonToValitity(Map<String, dynamic> json) {
+  print(json);
+  print(json["suspicious"]);
+  var isSuspicious = json["suspicious"].toString().toLowerCase() == "true";
+  print(isSuspicious);
+  if (isSuspicious) {
+    return TicketValidity.CheckIdentity;
   }
-
-  TicketValidity toTicketValidity() {
-    if (isSuspicious) {
-      return TicketValidity.CheckIdentity;
-    } else {
-    return TicketValidity.Ok;
-    }
-  }
+  return TicketValidity.Ok;
 }
 
 Future<TicketValidity> callTicketValidationServer(String ticketId, String location) async {
   var json = await validateTicket(ticketId, location);
 
-  return ValidationResponse.fromJson(jsonDecode(json.body) as Map<String, dynamic>).toTicketValidity();
-
+  return fromJsonToValitity( jsonDecode(json.body) as Map<String, dynamic>);
 }
 
 class Ticket {
-  // Data fields
   String ticketId;
   final DateTime validFrom;
   final DateTime validUntil;
@@ -158,9 +146,9 @@ class Ticket {
   final int price;
   final SecurityFactorMethod securityFactorMethod;
   String nonce;
+  final String signature;
 
 
-  // Constructor
   Ticket({
     required this.ticketId,
     required this.validFrom,
@@ -170,6 +158,7 @@ class Ticket {
     required this.price,
     required this.securityFactorMethod,
     required this.nonce,
+    required this.signature,
   });
 
   factory Ticket.fromJson(Map<String, dynamic> json, String ticketId) {
@@ -181,7 +170,8 @@ class Ticket {
           destination:  json["payload"]["to_station"] ?? "0",
           price:  json["payload"]["price"] ?? "0",
           securityFactorMethod: SecurityFactorMethod.IDNumber,
-          nonce: "0"
+          nonce: "0",
+          signature: json["sign"]
     );
   }
 
@@ -195,7 +185,8 @@ class Ticket {
          destination: fields[4],
          price: int.parse(fields[5]),
          securityFactorMethod: SecurityFactorMethod.IDNumber,
-         nonce: fields[6]);
+         nonce: fields[6],
+         signature: fields[7],);
   }
 
   @override
@@ -206,7 +197,7 @@ class Ticket {
   }
 
   String toData() {
-    return "${ticketId}_${validFrom}_${validUntil}_${start}_${destination}_${price}_${nonce}";
+    return "${ticketId}_${validFrom}_${validUntil}_${start}_${destination}_${price}_${nonce}_${signature}";
   }
 }
 
