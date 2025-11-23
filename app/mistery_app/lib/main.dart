@@ -7,8 +7,8 @@ import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:flutter/material.dart';
 
+const String baseUrl = 'http://127.0.0.1:8000';
 
 void main() {
   runApp(MyApp());
@@ -25,6 +25,7 @@ class MyApp extends StatelessWidget {
         title: 'SBB Anonymous Ticket',
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
+          useMaterial3: true,
         ),
         debugShowCheckedModeBanner: false,
         home: MyHomePage(),
@@ -33,21 +34,32 @@ class MyApp extends StatelessWidget {
   }
 }
 
-
-
 class MyAppState extends ChangeNotifier {
+  var tickets = <Ticket>[];
+  Map<String, List<dynamic>> availableRoutes = {};
+  bool isLoadingRoutes = true;
 
-  var tickets = <Ticket>{ Ticket(
-      ticketId: 'ab1f9a7df661cc7fbcc354924e3a710e717d91805f443cd2eeec0029c36ace8d',
-      validFrom: DateTime.now(),
-      validUntil: DateTime.now(),
-      start: 'KIT',
-      destination: 'EPFL',
-      price: 20,
-      securityFactorMethod: SecurityFactorMethod.TokenCard,
-      nonce: '0',
-      signature: 'I_signed_this!'
-  )};
+  MyAppState() {
+    _fetchRoutesFromBackend();
+  }
+
+  Future<void> _fetchRoutesFromBackend() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/routes'));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        availableRoutes = Map<String, List<dynamic>>.from(data['routes']);
+      } else {
+        print('Failed to load routes: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching routes: $e');
+    } finally {
+      isLoadingRoutes = false;
+      notifyListeners();
+    }
+  }
 
   Future<void> generateTicket(
       String securityFactor,
@@ -61,22 +73,26 @@ class MyAppState extends ChangeNotifier {
     var nonce = Random.secure().toString();
     var bytes = utf8.encode(securityFactor + nonce);
     var ticketId = sha256.convert(bytes).toString().substring(0, 32);
-    Ticket ticket = await callTicketGenerationServer(
-      start,
-      destination,
-      validFrom,
-      validUntil,
-      ticketType,
-      validatingMethod,
-      ticketId,
-      nonce,
-    );
-    tickets.add(ticket);
-    notifyListeners();
+
+    try {
+      Ticket ticket = await callTicketGenerationServer(
+        start,
+        destination,
+        validFrom,
+        validUntil,
+        ticketType,
+        validatingMethod,
+        ticketId,
+        nonce,
+      );
+      tickets.add(ticket);
+      notifyListeners();
+    } catch (e) {
+      print("Error generating ticket: $e");
+    }
   }
-
-
 }
+
 
 Future<Ticket> callTicketGenerationServer(
     String start,
@@ -87,29 +103,56 @@ Future<Ticket> callTicketGenerationServer(
     String validatingMethod,
     String ticketId,
     String nonce) async {
-  
-  var json = await createTicket(
+
+  var response = await createTicket(
     start,
     destination,
-    validFrom.millisecondsSinceEpoch,
-    validUntil.millisecondsSinceEpoch,
+    validFrom.millisecondsSinceEpoch ~/ 1000,
+    validUntil.millisecondsSinceEpoch ~/ 1000,
     ticketType,
     validatingMethod,
     ticketId,
   );
 
-  var ticket = Ticket.fromJson(jsonDecode(json.body) as Map<String, dynamic>, ticketId);
+  if (response.statusCode != 200) {
+    throw Exception('Failed to create ticket: ${response.body}');
+  }
+
+  var ticket = Ticket.fromJson(jsonDecode(response.body) as Map<String, dynamic>, ticketId);
   ticket.nonce = nonce;
   ticket.ticketId = ticketId;
   return ticket;
 }
 
-Future<http.Response> validateTicket(
+Future<http.Response> createTicket(
+    String start,
+    String destination,
+    int validFromSeconds,
+    int validUntilSeconds,
+    String ticketType,
+    String validatingMethod,
     String ticketId,
-    String location
-    ) async {
+    ) {
+  return http.put(
+    Uri.parse('$baseUrl/buy-ticket'),
+    headers: <String, String>{
+      'Content-Type': 'application/json; charset=UTF-8',
+    },
+    body: jsonEncode(<String, dynamic>{
+      "from_station": start,
+      "to_station": destination,
+      "from_datetime": validFromSeconds,
+      "to_datetime": validUntilSeconds,
+      "ticket_type": ticketType,
+      "validating_methode": validatingMethod,
+      "user_provided_id": ticketId
+    }),
+  );
+}
+
+Future<http.Response> validateTicket(String ticketId, String location) async {
   return await http.put(
-    Uri.parse('http://127.0.0.1:8000/register/$ticketId'),
+    Uri.parse('$baseUrl/register/$ticketId'),
     headers: <String, String>{
       'Content-Type': 'application/json; charset=UTF-8',
     },
@@ -119,23 +162,27 @@ Future<http.Response> validateTicket(
   );
 }
 
+Future<TicketValidity> callTicketValidationServer(String ticketId, String location) async {
+  try {
+    var response = await validateTicket(ticketId, location);
+    if (response.statusCode == 200) {
+      return fromJsonToValitity(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    return TicketValidity.Invalid;
+  } catch (e) {
+    print(e);
+    return TicketValidity.Unkonwn;
+  }
+}
 
 TicketValidity fromJsonToValitity(Map<String, dynamic> json) {
-  print(json);
-  print(json["suspicious"]);
   var isSuspicious = json["suspicious"].toString().toLowerCase() == "true";
-  print(isSuspicious);
   if (isSuspicious) {
     return TicketValidity.CheckIdentity;
   }
   return TicketValidity.Ok;
 }
 
-Future<TicketValidity> callTicketValidationServer(String ticketId, String location) async {
-  var json = await validateTicket(ticketId, location);
-
-  return fromJsonToValitity( jsonDecode(json.body) as Map<String, dynamic>);
-}
 
 class Ticket {
   String ticketId;
@@ -147,7 +194,6 @@ class Ticket {
   final SecurityFactorMethod securityFactorMethod;
   String nonce;
   final String signature;
-
 
   Ticket({
     required this.ticketId,
@@ -162,70 +208,50 @@ class Ticket {
   });
 
   factory Ticket.fromJson(Map<String, dynamic> json, String ticketId) {
+    var payload = json["payload"];
+    var fromTime = DateTime.fromMillisecondsSinceEpoch((payload["from_datetime"] * 1000).toInt());
+    var toTime = DateTime.fromMillisecondsSinceEpoch((payload["to_datetime"] * 1000).toInt());
+
     return Ticket(
-          ticketId: ticketId,
-          validFrom:  DateTime.fromMillisecondsSinceEpoch((json["payload"]["from_datetime"])),
-          validUntil:  DateTime.fromMillisecondsSinceEpoch((json["payload"]["to_datetime"])),
-          start:  json["payload"]["from_station"] ?? "0",
-          destination:  json["payload"]["to_station"] ?? "0",
-          price:  json["payload"]["price"] ?? "0",
-          securityFactorMethod: SecurityFactorMethod.IDNumber,
-          nonce: "0",
-          signature: json["sign"]
+      ticketId: ticketId,
+      validFrom: fromTime,
+      validUntil: toTime,
+      start: payload["from_station"] ?? "Unknown",
+      destination: payload["to_station"] ?? "Unknown",
+      price: payload["price"] ?? 0,
+      securityFactorMethod: SecurityFactorMethod.IDNumber,
+      nonce: "0",
+      signature: json["sign"],
     );
-  }
-
-   Ticket fromQrCodeData(String data) {
-    var fields = data.split('_');
-     return Ticket(
-         ticketId: fields[0],
-         validFrom: DateTime.parse(fields[1]),
-         validUntil: DateTime.parse(fields[2]),
-         start: fields[3],
-         destination: fields[4],
-         price: int.parse(fields[5]),
-         securityFactorMethod: SecurityFactorMethod.IDNumber,
-         nonce: fields[6],
-         signature: fields[7],);
-  }
-
-  @override
-  String toString() {
-    final DateFormat formatter = DateFormat('dd.MM.yyyy');
-    return "${formatter.format(validFrom)} - ${formatter.format(validUntil)}" +
-        "\n$start to $destination";
   }
 
   String toData() {
     return "${ticketId}_${validFrom}_${validUntil}_${start}_${destination}_${price}_${nonce}_${signature}";
   }
+
+  @override
+  String toString() {
+    final DateFormat formatter = DateFormat('dd.MM.yyyy HH:mm');
+    return "${formatter.format(validFrom)} - ${formatter.format(validUntil)}\n$start to $destination";
+  }
 }
 
-Future<http.Response> createTicket(
-    String start,
-    String destination,
-    int validFromMilliseconds,
-    int validUntilMilliseconds,
-    String ticketType,
-    String validatingMethod,
-    String ticketId,
-    ) {
-  return http.put(
-    Uri.parse('http://127.0.0.1:8000/buy-ticket'),
-    headers: <String, String>{
-      'Content-Type': 'application/json; charset=UTF-8',
-    },
-    body: jsonEncode(<String, String>{
-      "from_station": start,
-      "to_station": destination,
-      "from_datetime": "$validFromMilliseconds",
-      "to_datetime": "$validUntilMilliseconds",
-      "ticket_type": ticketType,
-      "validating_methode": validatingMethod,
-      "user_provided_id": ticketId
-    }),
-  );
+enum TicketValidity { Ok, CheckIdentity, Invalid, Unkonwn }
+enum SecurityFactorMethod { TokenCard, IDNumber }
+
+String securityMethodToString(SecurityFactorMethod secMethod) {
+  switch (secMethod) {
+    case SecurityFactorMethod.TokenCard: return "SBB anonymous Token card";
+    case SecurityFactorMethod.IDNumber: return "ID number";
+  }
 }
+
+bool checkIdentity(String securityFactor, Ticket shownTicket) {
+  var bytes = utf8.encode(securityFactor + shownTicket.nonce);
+  var ticketId = sha256.convert(bytes).toString().substring(0, 32);
+  return ticketId == shownTicket.ticketId;
+}
+
 
 class MyHomePage extends StatefulWidget {
   @override
@@ -233,30 +259,18 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-
   var selectedIndex = 0;
 
   @override
   Widget build(BuildContext context) {
-
     Widget page;
     switch (selectedIndex) {
-      case 0:
-        page = TicketGenerator();
-        break;
-      case 1:
-        page = TicketViewer();
-        break;
-      case 2:
-        page = TicketChecker();
-        break;
-      case 3:
-        page = QrReader();
-        break;
-      default:
-        throw UnimplementedError('no widget for $selectedIndex');
+      case 0: page = TicketGenerator(); break;
+      case 1: page = TicketViewer(); break;
+      case 2: page = TicketChecker(); break;
+      case 3: page = QrReader(); break;
+      default: throw UnimplementedError('no widget for $selectedIndex');
     }
-
 
     return LayoutBuilder(
         builder: (context, constraints) {
@@ -266,30 +280,14 @@ class _MyHomePageState extends State<MyHomePage> {
                 SafeArea(
                   child: NavigationRail(
                     extended: constraints.maxWidth >= 600,
-                    destinations: [
-                      NavigationRailDestination(
-                        icon: Icon(Icons.train),
-                        label: Text('Generate ticket'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.qr_code),
-                        label: Text('See Ticket'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.check_circle_outline),
-                        label: Text('Validate ticket'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.qr_code_scanner),
-                        label: Text('Scan ticket'),
-                      ),
+                    destinations: const [
+                      NavigationRailDestination(icon: Icon(Icons.train), label: Text('Generate')),
+                      NavigationRailDestination(icon: Icon(Icons.qr_code), label: Text('My Tickets')),
+                      NavigationRailDestination(icon: Icon(Icons.check_circle_outline), label: Text('Validate')),
+                      NavigationRailDestination(icon: Icon(Icons.qr_code_scanner), label: Text('Scan')),
                     ],
                     selectedIndex: selectedIndex,
-                    onDestinationSelected: (value) {
-                      setState(() {
-                        selectedIndex = value;
-                      });
-                    },
+                    onDestinationSelected: (value) => setState(() => selectedIndex = value),
                   ),
                 ),
                 Expanded(
@@ -312,125 +310,126 @@ class TicketGenerator extends StatefulWidget {
 }
 
 class _TicketGeneratorState extends State<TicketGenerator> {
-  SecurityFactorMethod _selectedSecurityMethod = SecurityFactorMethod.TokenCard;
-  String _selectedStart = "KIT";
-  String _selectedDestination = "EPFL";
-  List<String> stations = ['KIT', 'EPFL', 'Bern', 'Zürich', 'Olten', 'Interlaken West'];
+  String? _selectedStart;
+  String? _selectedDestination;
+  SecurityFactorMethod? _selectedSecurityMethod;
+  final TextEditingController securityFactorController = TextEditingController();
 
+  final DateTime now = DateTime.now();
+  late DateTime inThreeMonth;
 
+  @override
+  void initState() {
+    super.initState();
+    inThreeMonth = DateTime(now.year, now.month + 3, now.day);
+  }
 
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
-    var now = DateTime.now();
-    var inThreeMonth = DateTime(now.year, now.month, now.day + 1);
-    final securityFactorController = TextEditingController();
 
-     return Center(
+    if (appState.isLoadingRoutes) {
+      return Center(child: CircularProgressIndicator());
+    }
+
+    if (appState.availableRoutes.isEmpty) {
+      return Center(child: Text("No routes available. Check server connection."));
+    }
+
+    List<String> destinations = [];
+    if (_selectedStart != null && appState.availableRoutes.containsKey(_selectedStart)) {
+      destinations = List<String>.from(appState.availableRoutes[_selectedStart]!);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.all(20.0),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Center(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  DropdownButton<String>(
-                    hint: Text('Select a start station'),
-                    value: _selectedStart,
-                    onChanged: (String? newValue) {
-                      setState (() {
-                        _selectedStart = newValue ?? "KIT";
-                      });
-                    },
-                    items: stations.map<DropdownMenuItem<String>>((String type) {
-                      return DropdownMenuItem<String>(
-                        value: type,
-                        child: Text(type), // Convert enum to string
-                      );
-                    }).toList(),
-                  ),
-                  SizedBox(width: 5,),
-                  Icon(Icons.keyboard_double_arrow_right_sharp),
-                  SizedBox(width: 5,),
-                  DropdownButton<String>(
-                    hint: Text('Select a destination'),
-                    value: _selectedDestination,
-                    onChanged: (String? newValue) {
-                      setState (() {
-                        _selectedDestination = newValue ?? "EPFL";
-                      });
-                    },
-                    items: stations.map<DropdownMenuItem<String>>((String type) {
-                      return DropdownMenuItem<String>(
-                        value: type,
-                        child: Text(type), // Convert enum to string
-                      );
-                    }).toList(),
-                  ),
-            ],
-            ),
+          Text("Buy Ticket", style: Theme.of(context).textTheme.headlineSmall),
+          SizedBox(height: 20),
+
+          DropdownButtonFormField<String>(
+            decoration: InputDecoration(border: OutlineInputBorder(), labelText: "Start Station"),
+            value: _selectedStart,
+            items: appState.availableRoutes.keys.map((String station) {
+              return DropdownMenuItem(value: station, child: Text(station));
+            }).toList(),
+            onChanged: (val) {
+              setState(() {
+                _selectedStart = val;
+                _selectedDestination = null;
+              });
+            },
           ),
-          SizedBox(height: 20.0,),
+          SizedBox(height: 10),
+
+          DropdownButtonFormField<String>(
+            decoration: InputDecoration(border: OutlineInputBorder(), labelText: "Destination"),
+            value: _selectedDestination,
+            items: destinations.map((String station) {
+              return DropdownMenuItem(value: station, child: Text(station));
+            }).toList(),
+            onChanged: _selectedStart == null ? null : (val) {
+              setState(() => _selectedDestination = val);
+            },
+          ),
+          SizedBox(height: 10),
 
           Row(
             children: [
-              SizedBox(width: 10,),
-              DropdownButton<SecurityFactorMethod>(
-                hint: Text('Select a Ticket Type'),
-                value: _selectedSecurityMethod,
-                onChanged: (SecurityFactorMethod? newValue) {
-                  setState (() {
-                    if (newValue != null) {
-                      _selectedSecurityMethod = newValue;
-                    }
-
-                  });
-                },
-                items: SecurityFactorMethod.values.map<DropdownMenuItem<SecurityFactorMethod>>((SecurityFactorMethod type) {
-                  return DropdownMenuItem<SecurityFactorMethod>(
-                    value: type,
-                    child: Text(type.toString().split('.').last.toUpperCase()), // Convert enum to string
-                  );
-                }).toList(),
+              Expanded(
+                flex: 2,
+                child: DropdownButtonFormField<SecurityFactorMethod>(
+                  decoration: InputDecoration(border: OutlineInputBorder(), labelText: "ID Type"),
+                  value: _selectedSecurityMethod,
+                  items: SecurityFactorMethod.values.map((type) {
+                    return DropdownMenuItem(
+                      value: type,
+                      child: Text(type.toString().split('.').last),
+                    );
+                  }).toList(),
+                  onChanged: (val) => setState(() => _selectedSecurityMethod = val),
+                ),
               ),
-              SizedBox(width: 10,),
+              SizedBox(width: 10),
               if (_selectedSecurityMethod != null)
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: TextField(
-                      controller: securityFactorController,
-                      decoration: InputDecoration(
-                        labelText: 'Enter your ${securityMethodToString(_selectedSecurityMethod!)}',
-                        border: OutlineInputBorder(),
-                      ),
+                  flex: 3,
+                  child: TextField(
+                    controller: securityFactorController,
+                    decoration: InputDecoration(
+                      labelText: 'Enter ${securityMethodToString(_selectedSecurityMethod!)}',
+                      border: OutlineInputBorder(),
                     ),
                   ),
                 ),
             ],
           ),
-          SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (context) {
-                  appState.generateTicket(
-                      securityFactorController.text,
-                      _selectedStart,
-                      _selectedDestination,
-                      now,
-                      inThreeMonth,
-                      'dayticket',
-                      _selectedSecurityMethod.toString(),
-                  );
-                  return AlertDialog(
-                    content: Text('ticket generated!'),
-                  );
-                },
+          SizedBox(height: 20),
+
+          ElevatedButton.icon(
+            icon: Icon(Icons.confirmation_number),
+            label: Text('Generate Ticket'),
+            onPressed: (_selectedStart == null || _selectedDestination == null || _selectedSecurityMethod == null)
+                ? null
+                : () async {
+              await appState.generateTicket(
+                securityFactorController.text,
+                _selectedStart!,
+                _selectedDestination!,
+                DateTime.now().add(Duration(minutes: 5)),
+                DateTime.now().add(Duration(hours: 4)),
+                'dayticket',
+                _selectedSecurityMethod.toString(),
               );
+
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Ticket Generated! Check "My Tickets" tab.'))
+                );
+              }
             },
-            child: Text('generate ticket'),
           ),
         ],
       ),
@@ -438,153 +437,178 @@ class _TicketGeneratorState extends State<TicketGenerator> {
   }
 }
 
-
 class TicketViewer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
 
     if (appState.tickets.isEmpty) {
-      return Center(
-        child: Text('No tickets yet.'),
-      );
+      return Center(child: Text('No tickets yet.'));
     }
 
     return ListView(
       children: [
         Padding(
           padding: const EdgeInsets.all(20),
-          child: Text('You have '
-              '${appState.tickets.length} tickets:'),
+          child: Text('You have ${appState.tickets.length} tickets:'),
         ),
-        for (var ticket in appState.tickets)
-          BigCard(ticket: ticket)
+        for (var ticket in appState.tickets) BigCard(ticket: ticket)
       ],
     );
   }
 }
 
-
-
-
 class TicketChecker extends StatefulWidget {
   @override
-  _TicketChecker createState() => _TicketChecker();
+  State<TicketChecker> createState() => _TicketCheckerState();
 }
 
-class _TicketChecker extends State<TicketChecker> {
+class _TicketCheckerState extends State<TicketChecker> {
   Ticket? selectedTicket;
   TicketValidity _ticketValidity = TicketValidity.Unkonwn;
-  String statusText = "";
-  var controller = TextEditingController();
-
+  final controller = TextEditingController();
+  final locationController = TextEditingController();
 
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
     var tickets = appState.tickets;
-    var locationController = TextEditingController();
 
-    if (appState.tickets.isEmpty) {
-      return Center(
-        child: Text('No tickets to check!'),
-      );
+    if (tickets.isEmpty) {
+      return Center(child: Text('No tickets available locally to check!'));
     }
 
-    return Scaffold(
-      body: Container(
-        color: Theme.of(context).colorScheme.primaryContainer,
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            SizedBox(height: 50,),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
-                  Text('Select a Ticket to validate'),
-                  DropdownButton<Ticket>(
-                    hint: Text('Select a Ticket'),
-                    value: selectedTicket,
-                    onChanged: (Ticket? newValue) {
-                      setState(() {
-                        selectedTicket = newValue;
-                      });
-                    },
-                    items: tickets.map<DropdownMenuItem<Ticket>>((Ticket ticket) {
-                      return DropdownMenuItem<Ticket>(
-                        value: ticket,
-                        child: Text('${ticket.start} -> ${ticket.destination}'),
-                      );
-                    }).toList(),
+            DropdownButton<Ticket>(
+              isExpanded: true,
+              hint: Text('Select a Ticket to simulate scan'),
+              value: selectedTicket,
+              onChanged: (Ticket? newValue) {
+                setState(() {
+                  selectedTicket = newValue;
+                  _ticketValidity = TicketValidity.Unkonwn;
+                });
+              },
+              items: tickets.map((Ticket ticket) {
+                return DropdownMenuItem(
+                  value: ticket,
+                  child: Text('${ticket.start} -> ${ticket.destination} (${ticket.ticketId.substring(0,8)}...)'),
+                );
+              }).toList(),
+            ),
+            SizedBox(height: 20),
+            if (selectedTicket != null) BigCard(ticket: selectedTicket!),
+            SizedBox(height: 20),
+
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: locationController,
+                    decoration: InputDecoration(
+                      labelText: 'Current Location',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
-                  SizedBox(height: 20),
-                  if (selectedTicket != null) BigCard(ticket: selectedTicket!,),
-                  SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.all(8.0),
-                          child: TextField(
-                            controller: locationController,
-                            decoration: InputDecoration(
-                              labelText: 'location',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
+                ),
+                SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (selectedTicket == null) return;
+                    var location = locationController.text;
+                    if (selectedTicket!.start != location&& selectedTicket!.destination != location) {
+                      _ticketValidity = TicketValidity.Invalid;
+                      return;
+                    }
+                    var val = await callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
+                    setState(() {
+                      _ticketValidity = val;
+                    });
+                  },
+                  child: Text('Validate'),
+                ),
+              ],
+            ),
+            SizedBox(height: 20),
+
+            if (_ticketValidity != TicketValidity.Unkonwn)
+              validityToCard(_ticketValidity),
+
+            if (_ticketValidity == TicketValidity.CheckIdentity && selectedTicket != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        decoration: InputDecoration(
+                          labelText: 'Verify ${securityMethodToString(selectedTicket!.securityFactorMethod)}',
+                          border: OutlineInputBorder(),
                         ),
                       ),
-                      ElevatedButton(
-                        onPressed: () async {
-                          var val = await callTicketValidationServer(selectedTicket!.ticketId, locationController.text);
-                          setState(() {
-                            _ticketValidity = val;
-                            locationController.clear();
-                          });
-                          },
-                        child: Text('check ticket'),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 20,),
-                  if (selectedTicket != null)
-                    validityToCard(_ticketValidity, context, selectedTicket!),
-                  if (_ticketValidity ==  TicketValidity.CheckIdentity && (selectedTicket != null) && selectedTicket!.securityFactorMethod != null)
-                    Row(
-                      children: [
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.all(8.0),
-                              child: TextField(
-                                controller: controller,
-                                decoration: InputDecoration(
-                                    labelText: 'Enter clients ${securityMethodToString(selectedTicket!.securityFactorMethod)}',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ElevatedButton(
-                            onPressed: () {
-                              setState(() {
-
-                                if (checkIdentity(controller.text, selectedTicket!)) {
-                                  _ticketValidity = TicketValidity.Ok;
-                                  return;
-                                }
-                                _ticketValidity = TicketValidity.Invalid;
-                              });
-                            },
-                            child: Text('Check Identity'))
-                      ],
                     ),
-
-
-              ],
+                    SizedBox(width: 10),
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          if (checkIdentity(controller.text, selectedTicket!)) {
+                            _ticketValidity = TicketValidity.Ok;
+                          } else {
+                            _ticketValidity = TicketValidity.Invalid;
+                          }
+                        });
+                      },
+                      child: Text('Verify'),
+                    )
+                  ],
+                ),
               ),
-            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget validityToCard(TicketValidity validity) {
+    Color color;
+    String text;
+    IconData icon;
+
+    switch (validity) {
+      case TicketValidity.Ok:
+        color = Colors.green;
+        text = 'Validation Successful';
+        icon = Icons.check;
+        break;
+      case TicketValidity.CheckIdentity:
+        color = Colors.orange;
+        text = 'Suspicious! Check Identity.';
+        icon = Icons.perm_identity;
+        break;
+      case TicketValidity.Invalid:
+        color = Colors.red;
+        text = 'Ticket Invalid!';
+        icon = Icons.warning;
+        break;
+      default:
+        return SizedBox();
+    }
+
+    return Card(
+      color: color,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white),
+            SizedBox(width: 10),
+            Text(text, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ],
         ),
       ),
@@ -592,13 +616,8 @@ class _TicketChecker extends State<TicketChecker> {
   }
 }
 
-
-
 class BigCard extends StatelessWidget {
-  const BigCard({
-    super.key,
-    required this.ticket,
-  });
+  const BigCard({super.key, required this.ticket});
 
   final Ticket ticket;
 
@@ -606,195 +625,92 @@ class BigCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodyMedium!.copyWith(
-      color:  theme.colorScheme.onPrimary,
+      color: theme.colorScheme.onPrimary,
     );
 
-    return Card (
+    return Card(
       color: theme.colorScheme.primary,
       child: Padding(
         padding: const EdgeInsets.all(20),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: Column(
           children: [
-            Flexible(
-                child: SizedBox(
-                  height: 200,
-                  width: 200,
-                  child: QrImageView(
-                    data: ticket.toData(),
-                    padding: EdgeInsets.all(5.0),
-                    version: QrVersions.auto,
-                    backgroundColor: Colors.white,
-                  ),
-                ),
+            Container(
+              color: Colors.white,
+              padding: EdgeInsets.all(8),
+              child: QrImageView(
+                data: ticket.toData(),
+                version: QrVersions.auto,
+                size: 200.0,
+              ),
             ),
-            SizedBox(width: 10,),
-            Text(
-              ticket.toString(),
-              style: style,
-            ),
+            SizedBox(height: 10),
+            Text(ticket.toString(), style: style, textAlign: TextAlign.center),
           ],
         ),
       ),
     );
   }
-}
-
-enum TicketValidity {
-  Ok,
-  CheckIdentity,
-  Invalid,
-  Unkonwn,
-}
-
-bool checkIdentity(String securityFactor, Ticket shownTicket) {
-  var bytes = utf8.encode(securityFactor + shownTicket.nonce);
-  var ticketId = sha256.convert(bytes).toString().substring(0, 32);
-
-  return ticketId == shownTicket.ticketId;
-}
-
-SizedBox validityToCard(TicketValidity validity, BuildContext context, Ticket controlledTicket) {
-  switch (validity) {
-
-    case TicketValidity.Ok:
-      return SizedBox(
-        height: 80,
-        child: Card(
-          color: Colors.green,
-          child: Center(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.check),
-                SizedBox(width: 5.0,),
-                Text('Validation successful'),
-              ],
-            ),
-          ),
-        ),
-      );
-    case TicketValidity.CheckIdentity:
-      return SizedBox(
-        height: 80,
-        child: Card(
-          color: Colors.orange,
-          child: Center(
-            child:
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.perm_identity),
-                    SizedBox(width: 5.0,),
-                    Text('Check Identity of client!'),
-                  ],
-                ),
-
-          ),
-        ),
-      );
-    case TicketValidity.Invalid:
-      return SizedBox(
-        height: 80,
-        child: Card(
-          color: Colors.red,
-          child: Center(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.warning),
-                SizedBox(width: 5.0,),
-                Text('Ticket invalid!'),
-              ],
-            ),
-          ),
-        ),
-      );
-    case TicketValidity.Unkonwn:
-      return SizedBox(
-      );
-  }
-}
-
-String securityMethodToString(SecurityFactorMethod secMethod) {
-  switch (secMethod) {
-
-    case SecurityFactorMethod.TokenCard:
-      return "SBB anonymouse Token card";
-    case SecurityFactorMethod.IDNumber:
-      return "ID number";
-  }
-}
-
-
-
-enum SecurityFactorMethod {
-  TokenCard,
-  IDNumber,
 }
 
 class QrReader extends StatefulWidget {
   const QrReader({super.key});
 
   @override
-  State<QrReader> createState() => _QrReader();
+  State<QrReader> createState() => _QrReaderState();
 }
 
-class _QrReader extends State<QrReader> {
+class _QrReaderState extends State<QrReader> {
   String? _result;
-
-  void setResult(String result) {
-    setState(() => _result = result);
-  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_result ?? 'No result'),
-            ElevatedButton(
-              child: const Text('Scan QR code'),
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => QrCodeScanner(setResult: setResult),
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(_result ?? 'Scan a QR Code'),
+          SizedBox(height: 20),
+          ElevatedButton.icon(
+            icon: Icon(Icons.camera_alt),
+            label: const Text('Open Scanner'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => QrCodeScanner(
+                  setResult: (result) => setState(() => _result = result),
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-
 class QrCodeScanner extends StatelessWidget {
-  QrCodeScanner({required this.setResult,super.key});
+  QrCodeScanner({required this.setResult, super.key});
 
   final MobileScannerController controller = MobileScannerController();
-  final Function setResult;
+  final Function(String) setResult;
 
   @override
   Widget build(BuildContext context) {
-    return MobileScanner(
-      controller: controller,
-      onDetect: (BarcodeCapture capture) async {
-        final List<Barcode> barcodes = capture.barcodes;
-
-        final barcode = barcodes.first;
-
-        if (barcode.rawValue != null) {
-          setResult(barcode.rawValue);
-
-          await controller
-              .stop()
-              .then((value) => controller.dispose())
-              .then((value) => Navigator.of(context).pop());
-        }
-      },
+    return Scaffold(
+      appBar: AppBar(title: Text("Scan Ticket")),
+      body: MobileScanner(
+        controller: controller,
+        onDetect: (BarcodeCapture capture) {
+          final List<Barcode> barcodes = capture.barcodes;
+          for (final barcode in barcodes) {
+            if (barcode.rawValue != null) {
+              setResult(barcode.rawValue!);
+              controller.stop();
+              Navigator.of(context).pop();
+              break;
+            }
+          }
+        },
+      ),
     );
   }
 }
