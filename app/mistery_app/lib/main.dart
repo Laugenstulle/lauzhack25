@@ -185,15 +185,16 @@ class Ticket {
   }
 
    Ticket fromQrCodeData(String data) {
+    var fields = data.split('_');
      return Ticket(
-         ticketId: data.substring(0, 32),
-         validFrom: DateTime.parse(data.substring(32, 58)),
-         validUntil: DateTime.parse(data.substring(58, 84)),
-         start: data.substring(84, 87),
-         destination: data.substring(87, 91),
-         price: 0,
+         ticketId: fields[0],
+         validFrom: DateTime.parse(fields[1]),
+         validUntil: DateTime.parse(fields[2]),
+         start: fields[3],
+         destination: fields[4],
+         price: int.parse(fields[5]),
          securityFactorMethod: SecurityFactorMethod.IDNumber,
-         nonce: '');
+         nonce: fields[6]);
   }
 
   @override
@@ -204,7 +205,7 @@ class Ticket {
   }
 
   String toData() {
-    return "$ticketId$validFrom$validUntil$start$destination";
+    return "${ticketId}_${validFrom}_${validUntil}_${start}_${destination}_${price}_${nonce}";
   }
 }
 
